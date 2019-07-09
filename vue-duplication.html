@@ -1,0 +1,372 @@
+<html>
+<head>
+	<meta http-equiv="content-type" content="text/html;charset=utf-8">
+	<script src="https://cdn.jsdelivr.net/npm/vue/dist/vue.js"></script>  
+	<script src="https://cdn.jsdelivr.net/npm/vue-resource@1.5.1"></script>
+	<!--
+	<script src="https://unpkg.com/axios/dist/axios.min.js"></script>-->
+	<!-- 引入样式 -->
+	<link rel="stylesheet" href="https://unpkg.com/element-ui/lib/theme-chalk/index.css">
+	<!-- 引入组件库 -->
+	<script src="https://unpkg.com/element-ui/lib/index.js"></script>
+</head>
+
+<body>
+
+	<div id="app">
+		<dir>普通按钮</dir>	
+		<input type="button" value="send2"  v-duplication @click="sendAxios"/>
+
+		<dir>没有防止重复的按钮 </dir>
+		<input type="button" value="no duplication"   @click="sendAxios"/>
+
+		<dir>不发生请求的情况</dir>
+		<input type="button" value="no send" v-duplication />
+        <el-button type="primary"  v-duplication>no send</el-button>
+		<dir>el-button</dir>
+		<el-button type="primary"  @click="sendAxios" v-duplication>el-button</el-button>
+
+		<dir>使用v-duplication-head指令的命令模式 模拟弹出框场景</dir>
+		<el-button type="primary"  @click="openmessage" v-duplication-head>弹窗后发送请求</el-button>
+
+		<dir>使用v-duplication-head指令的指令模式，使用场景 如 v-duplication-head按钮弹出框，弹出框有个按钮</dir>
+		<el-button type="primary"   v-duplication-head>v-duplication-head</el-button>
+		<el-button type="primary"  @click="sendAxios" v-duplication>v-duplication</el-button>
+
+        <div>
+        	<ul>测试逻辑
+        		<li>1.无指令按钮，发生请求，拦击器代码不出发插件</li>
+        		<li>2.无请求按钮，一秒自动恢复</li>
+        		<li>3.按钮有请求，请求回来后恢复</li>
+        		<li>4.先点击v-duplication-head按钮，测试2、3</li>
+        		<li>5.随机测试</li>
+        	</ul>
+        </div>
+	</div>
+	<script>
+var DduplicationPlugin = function(){
+
+	let maxDduplicationId = 1;
+
+	let defaultButtonOpts = {
+		elm:{
+			disabled: function(button,vnode,value){
+			   button.disabled = value;
+			   if(value){
+			   	button.classList.add("is-disabled");
+			   }else{
+			   	button.classList.remove("is-disabled");
+			   }
+			}, 
+			wait: function(button,vnode,value){
+			   if(value){
+			   	  if(button.loadingIocn){
+			   	  	return;
+			   	  }
+			      button.classList.add("is-loading");
+			      let loadingIocn = button.loadingIocn = document.createElement('i');
+                  loadingIocn.classList.add("el-icon-loading");
+
+			      if(button.firstElementChild){
+			     	 button.insertBefore(loadingIocn,button.firstElementChild);
+			      }else{
+			      	 button.appendChild(loadingIocn);
+			      }
+			   }else{
+		    	  button.classList.remove("is-loading");
+		    	  let  loadingIocn = button.loadingIocn;
+		    	  button.loadingIocn = null;
+		    	  loadingIocn.remove();
+			   }
+			}
+		},
+		component:{
+			disabled: function(button,vnode,value){
+			//如果存在组件
+				if(vnode.componentInstance){
+					vnode.componentInstance.disabled = value ;
+				}else{
+					button.disabled = value;  
+				}
+			}, 
+			wait: function(button,vnode,value){
+				if(vnode.componentInstance){
+					vnode.componentInstance.loading = value ;
+				}
+			}
+		}
+	}
+
+    let defaultInterceptors = {
+		vueResource: function(duplication){
+			Vue.http.interceptors.push((request, next) => {
+				request._rid = Symbol();
+				window.setTimeout(function(){
+					duplication.requestWait(request._rid);
+				});
+
+				next((response) => {
+					duplication.requestComplete(request._rid);
+					return response
+				});
+			});
+		},
+		axios: function(duplication){
+			// 请求一个响应拦截器
+			axios.interceptors.request.use(function (config) {
+				config._rid = Symbol();
+				window.setTimeout(function(){
+					duplication.requestWait(config._rid);
+				});
+
+				return config;
+			});
+			// 添加一个响应拦截器
+			axios.interceptors.response.use(function (response) {
+				duplication.requestComplete(response.config._rid);
+				return response;
+			}, function (error) {
+				duplication.requestComplete(error.config._rid);
+				return Promise.reject(error);
+			});
+		}
+	}
+	
+	let creatDduplication = function({buttonOpt,interceptor},debug){
+		return {
+			debug : debug,
+			buttonOpt:buttonOpt,
+			interceptor:interceptor,
+			id:	maxDduplicationId++,
+			log: function(funName){
+				if(debug===false){
+					return;
+				}
+				window.console.log(funName)
+				let buttons = this.buttons;
+				let waitSet = this.waitSet;
+
+				this.buttons= buttons.length;
+				this.waitSet= waitSet.size;
+				window.console.log(JSON.stringify(this))
+
+				this.buttons = buttons; 
+				this.waitSet = waitSet; 
+			},	
+			waitSet : new Set(),
+			buttons : [],
+			/*
+			* readying(准备中)   
+			* start（开始后一秒中无请求直接停止）
+			* wait（一秒中有请求进入等待)
+			* stop(有请求的话等待所有的请求完成进入停止状态)
+			*/
+			state :'readying',//准备中
+            disabledButton(button,value){
+               this.buttonOpt.disabled(button.button,button.vnode,value);
+            }, 
+            disabledButtons(button,value){
+               for(button of this.buttons){
+				this.disabledButton(button,value);
+			   }
+            }, 
+            waitButton(button,value){
+               this.buttonOpt.wait(button.button,button.vnode,value);
+            },
+            waitButtons(value){
+               for(button of this.buttons){
+				 this.waitButton(button,value);
+			   }
+            }, 
+			push :function(button){
+				this.disabledButton(button,true);
+				this.buttons.push(button);
+			},
+			start :function(){
+				this.state = 'start';
+				this.jobId = window.setTimeout(()=>{
+					this.stop();
+				},1000); 
+				this.log("start");
+			},
+			stop :function(){
+				this.state = 'stop';
+				window.clearTimeout(this.jobId);//去掉定时器 
+				this.disabledButtons(false);
+				this.waitButtons(false);
+				this.buttons=[];
+				this.waitSet.clear();
+				this.log("stop");
+			},
+			requestComplete :function(rid){
+				if(this.waitSet.has(rid)){
+					this.waitSet.delete(rid);
+					this.log("requestComplete");
+					if(this.waitSet.size  === 0 ){
+						this.stop();
+					}
+					
+				}
+			},
+			requestWait:function(rid){
+				this.waitButtons(true);
+				this.state='wait'; 
+				this.waitSet.add(rid); 
+				window.clearTimeout(this.jobId);//去掉定时器 
+				this.log("requestWait");
+			}
+		}
+	};
+
+
+	let duplication = {
+		debug:true, // 设置为false 关闭debug
+		cur : null,
+		duplications:[],
+		setOpt:function(buttonOpt,interceptor){
+			this.opt = {buttonOpt,interceptor};
+			interceptor(this);
+		},
+		remove : function(duplication) {
+			var index = this.duplications.indexOf(duplication);
+			if (index > -1) {
+				this.duplications.splice(index, 1);
+			}
+			if(this.cur === duplication){
+				this.cur = null;
+			}
+		},
+		creatDduplication :function(){
+			this.cur = creatDduplication(this.opt,this.debug);
+			this.duplications.push(this.cur);
+			return this.cur;
+		},
+		pushAndStart :function(button , vnode){
+			this.push({button,vnode});	
+			this.start();
+		},
+		pushWaitStart :function(button , vnode){
+			this.push({button,vnode});
+		},
+		push : function(button){
+			if(this.cur == null || this.cur.state !='readying'){
+				this.creatDduplication();
+			}
+			this.cur.push(button);
+		},
+		start : function(){
+			this.cur.start();
+		},
+		requestComplete :function(id){
+			const duplications = [...this.duplications];
+			for(duplication of duplications){
+				duplication.requestComplete(id);
+				if(duplication.state == 'stop'){
+					this.remove(duplication);
+				}
+			}
+		},
+		requestWait:function(id){
+			if(this.cur != null && (this.cur.state ==='start' || this.cur.state ==='wait')) { //
+				this.cur.requestWait(id);
+			}
+		}
+	};
+
+    return {
+    	install : function (Vue, {buttonOpt = 'elm', interceptor = 'axios'}) {
+             Vue.prototype.$duplication = Vue.duplication = duplication;
+			//初始化 
+             duplication.setOpt(defaultButtonOpts[buttonOpt] || buttonOpt,
+             	defaultInterceptors[interceptor] || interceptor);
+
+			Vue.directive('duplication', {
+				priority:0,
+				// 当被绑定的元素插入到 DOM 中时……
+				bind: function (el, binding, vnode) {
+					el.addEventListener("click", function(){
+						Vue.duplication.pushAndStart(el,vnode);
+					},false);
+				}
+			})
+			// 使用该指令的按钮，不发送请求，等待后面的操作发生请求，该按钮等待后面的请求完成后恢复正常
+			Vue.directive('duplicationHead', {
+				priority:0,
+				// 当被绑定的元素插入到 DOM 中时……
+				bind: function (el, binding, vnode) {
+					el.onclick = function(){
+						Vue.duplication.pushWaitStart(el,vnode);  
+					}
+				}
+			})
+    	}
+    }
+}()
+		
+
+
+//使用vueResource拦截器
+Vue.use(DduplicationPlugin, { interceptor: 'vueResource',buttonOpt:'component' });
+
+var app = new Vue({
+	el: '#app',
+	data: {
+		message: 'Hello Vue!'
+	},
+	methods: {
+		openmessage() {
+			this.$confirm('此操作将永久删除该文件, 是否继续?', '提示', {
+				confirmButtonText: '确定',
+				cancelButtonText: '取消',
+				type: 'warning'
+			}).then(() => {
+				this.$message({
+					type: 'success',
+					message: '删除成功!'
+				});
+				this.$duplication.start();
+				this.sendAxios();
+			}).catch(() => {
+				this.$message({
+					type: 'info',
+					message: '已取消删除'
+				});   
+				this.$duplication.start();       
+			});
+		},
+		sendAxios: function () {
+			let url = "https://fanyi.baidu.com/translate?aldtype=16047&query=%E9%98%B2%E6%AD%A2%E9%87%8D%E5%A4%8D&keyfrom=baidu&smartresult=dict&lang=auto2zh#zh/en/%E9%98%B2%E6%AD%A2%E9%87%8D%E5%A4%8D"
+
+	  //let url = "a.json";
+	  this.$http.get(url)
+	  .then(function(response) {
+	  	console.log(response.data);
+	  	console.log(response.status);
+	  	console.log(response.statusText);
+	  	console.log(response.headers);
+	  	console.log(response.config);
+	  });
+	  this.$http.get(url)
+	  .then(function(response) {
+	  	console.log(response.data);
+	  	console.log(response.status);
+	  	console.log(response.statusText);
+	  	console.log(response.headers);
+	  	console.log(response.config);
+	  });
+	 this.$http.get(url)
+	  .then(function(response) {
+	  	console.log(response.data);
+	  	console.log(response.status);
+	  	console.log(response.statusText);
+	  	console.log(response.headers);
+	  	console.log(response.config);
+	  });		  
+	}
+}
+})
+</script>
+</body>
+
+</html>
+
