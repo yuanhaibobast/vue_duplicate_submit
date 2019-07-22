@@ -25,4 +25,4 @@ vue版本防止重复提交
     自定义实现需要实现disabled: function(button,vnode,value)和wait: function(button,vnode,value)方法
     具体可参考源代码码
  
- # 作者邮件，516194844@qq.com，前后端都行，求职中。。。。 
+
